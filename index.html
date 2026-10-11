@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shared Fund Manager</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">SF</div><div><strong>Shared Fund</strong><span>MANAGER · TOKYO</span></div></div>
+      <div class="nav-label">WORKSPACE</div>
+      <nav>
+        <button class="active" data-page="dashboard">▦ <span>Dashboard</span></button>
+        <button data-page="deposits">↓ <span>তাকা জমা</span></button>
+        <button data-page="expenses">▤ <span>বাজারের খরচ</span></button>
+        <button data-page="transactions">▤ <span>লেনদেনের ইতিহাস</span></button>
+        <button data-page="reports">▥ <span>মাসিক হিসাব</span></button>
+        <button data-page="settlement">◎ <span>সেটেলমেন্ট</span><i class="nav-dot"></i></button>
+      </nav>
+      <div class="nav-label secondary-label">SYSTEM</div>
+      <nav><button data-page="backup">▧ <span>ডেটা ব্যাকআপ</span></button><button data-page="settings">⚙ <span>Settings</span></button></nav>
+      <div class="sidebar-bottom"><div class="secure">▣ <span>Stored locally<br><b>Browser storage secured</b></span></div><div class="version">v1.0.0 · Offline mode</div></div>
+    </aside>
+    <main class="main-content">
+      <header class="topbar"><button class="mobile-menu" aria-label="Open menu">☰</button><div class="breadcrumb"><span>Workspace</span><b>/</b><strong id="breadcrumb">Overview</strong></div><div class="top-actions"><div class="date-pill">▣ <span id="top-month"></span></div><button class="avatar">A</button></div></header>
+      <div class="content" id="app"></div>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script src="script.js"></script>
+</body>
+</html>
