@@ -12,7 +12,7 @@ const byDate=(a,b)=>b.date.localeCompare(a.date)||String(b.id).localeCompare(Str
 const shiftMonth=(m,n)=>{const[y,mo]=m.split('-').map(Number),d=new Date(y,mo-1+n,1);return `${d.getFullYear()}-${pad(d.getMonth()+1)}`};
 const monthShort=m=>new Date(+m.slice(0,4),+m.slice(5)-1,1).toLocaleString('en',{month:'short'});
 
-const state={month:today().slice(0,7),deposits:[],expenses:[],settlements:[]};
+const state={month:today().slice(0,7),deposits:[],expenses:[],settlements:[],cashTo:{}};
 const names={a:'Person A',b:'Person B'};
 const nm=k=>esc(names[k]);
 const app=$('#app');
@@ -33,7 +33,8 @@ async function all(s){return db?tx(s,'readonly',o=>o.getAll()):[...mem[s]]}
 async function clear(s){if(!db){mem[s]=[];return}return tx(s,'readwrite',o=>o.clear())}
 async function load(){
   state.deposits=await all('deposits');state.expenses=await all('expenses');state.settlements=await all('settlements');
-  const m=(await all('meta')).find(x=>x.key==='names');if(m)Object.assign(names,m.value)}
+  const meta=await all('meta'),m=meta.find(x=>x.key==='names');if(m)Object.assign(names,m.value);
+  const c=meta.find(x=>x.key==='cashTo');state.cashTo=c&&c.value&&typeof c.value==='object'?{...c.value}:{}}
 async function save(store,v,msg){await put(store,v);await load();show();notify(msg)}
 
 /* ---------- calculations ---------- */
@@ -43,6 +44,14 @@ const jointOf=m=>sum(expIn(m).filter(x=>x.scope==='joint'));
 const fundBalance=()=>sum(state.deposits)-sum(state.expenses.filter(x=>x.source==='fund'));
 const setl=m=>state.settlements.find(s=>s.month===m);
 const carryIn=m=>{const s=setl(shiftMonth(m,-1));return s&&s.mode==='carry'?s.total:0};
+/* Settlement model (per month, integers only):
+   bal[k]  = deposits + own-pocket joint payments - personal(fund) - fair share
+   cash    = this month's deposits - this month's fund-paid spending (= bal.a + bal.b)
+   The remaining cash is a shared ASSET: whoever receives it has it deducted from their balance,
+   so adjusted balances always sum to 0 and the settlement is exactly adj.a (>0: b pays a).
+   Odd yen: a bears floor(J/2), b bears the extra yen (unchanged from before).
+   Months settled before this change (no cashTo stored) keep the old equal-split-cash result. */
+const cashAdj=(bal,cash,to)=>({a:bal.a-(to==='a'?cash:0),b:bal.b-(to==='b'?cash:0)});
 function calc(m){
   const D={a:0,b:0},O={a:0,b:0},P={a:0,b:0};let J=0;
   depIn(m).forEach(x=>D[x.member]+=x.amount);
@@ -51,8 +60,17 @@ function calc(m){
     else if(x.source==='fund')P[x.owner]+=x.amount});
   const share=Math.floor(J/2);
   const bal={a:D.a+O.a-P.a-share,b:D.b+O.b-P.b-(J-share)};
+  const fundOut=(J-O.a-O.b)+P.a+P.b,cash=D.a+D.b-fundOut;
+  const s=setl(m),legacy=!!s&&!s.cashTo;
+  const auto=Math.abs(cashAdj(bal,cash,'a').a)<=Math.abs(cashAdj(bal,cash,'b').a)?'a':'b';
+  const pick=v=>v==='a'||v==='b'?v:null;
+  const cashTo=legacy?null:(s&&pick(s.cashTo))||pick(state.cashTo[m])||auto;
   const carry=carryIn(m);
-  return{D,O,P,J,share,bal,carry,diff:Math.trunc((bal.a-bal.b)/2)+carry};
+  let adj=null,net=null,base;
+  if(legacy)base=Math.trunc((bal.a-bal.b)/2);
+  else{adj=cashAdj(bal,cash,cashTo);base=adj.a;
+    net={a:D.a+O.a-(cashTo==='a'?cash:0)-base,b:D.b+O.b-(cashTo==='b'?cash:0)+base}}
+  return{D,O,P,J,share,bal,cash,cashTo,auto,legacy,adj,net,base,carry,diff:base+carry};
 }
 const oweText=d=>d===0?'হিসাব সমান — কারো কিছু দেওয়ার নেই':d>0?`${nm('b')} → ${nm('a')} কে দিতে হবে ${yen(d)}`:`${nm('a')} → ${nm('b')} কে দিতে হবে ${yen(-d)}`;
 
@@ -159,9 +177,14 @@ pages.settlement=()=>{
   const m=state.month,r=calc(m),s=setl(m);
   const row=k=>`<div class="member-row"><div class="person"><span class="person-avatar ${k==='b'?'teal':''}">${esc(names[k].charAt(0))}</span><div>${nm(k)}<small class="sub">জমা ${yen(r.D[k])} · নিজে কিনেছে ${yen(r.O[k])} · ব্যক্তিগত (ফান্ড) ${yen(r.P[k])}</small></div></div><strong class="${r.bal[k]<0?'negative':'positive'}">${sgn(r.bal[k])}</strong></div>`;
   const hist=[...state.settlements].sort((a,b)=>b.month.localeCompare(a.month));
+  const cashBtn=k=>`<button class="button ${r.cashTo===k?'primary':'outline'}" data-act="setCash" data-id="${k}" ${s?'disabled':''}>${nm(k)}</button>`;
+  const whole=fundBalance();
+  const cashBlock=r.legacy
+    ?`<p class="sub">এই মাসটি আগের পদ্ধতিতে (অবশিষ্ট নগদ সমান ভাগে) মেটানো হয়েছিল, তাই ফলাফল অপরিবর্তিত রাখা হয়েছে। নতুন পদ্ধতিতে দেখতে "মাস আবার খুলুন" চাপুন।</p>`
+    :`<div class="split-line nopad"><span>অবশিষ্ট নগদ (শেয়ার্ড ফান্ড)</span><b>${yen(r.cash)}</b></div><div class="split-line nopad"><span>নগদ পাবেন</span><b>${nm(r.cashTo)}</b></div><div class="btn-row spaced">${cashBtn('a')}${cashBtn('b')}</div>${state.cashTo[m]||s?'':`<p class="sub">স্বয়ংক্রিয়ভাবে নির্বাচিত (কম লেনদেনের জন্য)। বদলাতে অন্যজনকে চাপুন।</p>`}${whole!==r.cash?`<p class="sub">ফান্ডের মোট ব্যালান্স (সব মাস) ${yen(whole)} — এই সেটেলমেন্টে শুধু ${m} মাসের নগদ ধরা হয়েছে।</p>`:''}${r.net?`<div class="split-line nopad"><span>চূড়ান্ত নিট খরচ — ${nm('a')}</span><b>${yen(r.net.a)}</b></div><div class="split-line nopad"><span>চূড়ান্ত নিট খরচ — ${nm('b')}</span><b>${yen(r.net.b)}</b></div>`:''}`;
   app.innerHTML=head('SETTLEMENT','সেটেলমেন্ট','মাসের হিসাব মিটিয়ে নিন',monthIn())
   +`<section class="dashboard-grid"><div class="panel"><div class="panel-head"><div><h2>${m} এর হিসাব</h2><span>ব্যালান্স = জমা + নিজের পকেটের যৌথ খরচ − ব্যক্তিগত (ফান্ড) − ন্যায্য অংশ</span></div></div>${row('a')}${row('b')}
-  <div class="split-line"><span>মোট যৌথ খরচ</span><b>${yen(r.J)}</b></div><div class="split-line nopad"><span>প্রত্যেকের ন্যায্য অংশ</span><b>${yen(r.share)}</b></div>${r.carry?`<div class="split-line nopad"><span>আগের মাস থেকে আসা</span><b>${sgn(r.carry)}</b></div>`:''}</div>
+  <div class="split-line"><span>মোট যৌথ খরচ</span><b>${yen(r.J)}</b></div><div class="split-line nopad"><span>প্রত্যেকের ন্যায্য অংশ</span><b>${yen(r.share)}</b></div>${r.J%2?`<div class="split-line nopad"><span>বিজোড় ¥1 বহন করেন</span><b>${nm('b')}</b></div>`:''}${cashBlock}${r.carry?`<div class="split-line nopad"><span>আগের মাস থেকে আসা</span><b>${sgn(r.carry)}</b></div>`:''}</div>
   <div class="panel"><div class="panel-head"><div><h2>ফলাফল</h2></div>${s?`<span class="badge ${s.mode==='closed'?'green':'blue'}">${s.mode==='closed'?'মাস বন্ধ':'পরের মাসে নেওয়া হয়েছে'}</span>`:'<span class="badge gold">চলমান</span>'}</div>
   <p class="big-result">${oweText(r.diff)}</p><div class="btn-row">${s?`<button class="button outline full" data-act="reopen">মাস আবার খুলুন</button>`:`<button class="button primary full" data-act="close">মিটিয়ে মাস বন্ধ করুন</button><button class="button outline full" data-act="carry">পরের মাসে নিয়ে যান</button>`}</div>
   <p class="sub">বন্ধ করলে এই পরিমাণ মিটিয়ে ফেলা ধরা হবে। নিয়ে গেলে পরের মাসের হিসাবে যোগ হবে।</p></div></section>
@@ -182,7 +205,7 @@ function show(){$('#top-month').textContent=state.month;pages[page]()}
 
 /* ---------- backup helpers ---------- */
 function download(name,text,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-async function wipeAll(){for(const s of ['deposits','expenses','settlements'])await clear(s)}
+async function wipeAll(){for(const s of ['deposits','expenses','settlements'])await clear(s);state.cashTo={};await del('meta','cashTo')}
 async function importData(file){
   if(!file)return;
   try{const d=JSON.parse(await file.text());if(d.app!=='shared-fund-manager'||!Array.isArray(d.deposits)||!Array.isArray(d.expenses))throw 0;
@@ -191,9 +214,10 @@ async function importData(file){
     if(!confirm(`বর্তমান ডেটা মুছে ${dep.length}টি জমা ও ${exp.length}টি খরচ ইমপোর্ট করবেন?`)){$('#import').value='';return}
     await wipeAll();for(const x of dep)await put('deposits',x);for(const x of exp)await put('expenses',x);for(const x of st)await put('settlements',x);
     if(d.names&&d.names.a&&d.names.b){Object.assign(names,{a:String(d.names.a),b:String(d.names.b)});await put('meta',{key:'names',value:{...names}})}
+    if(d.cashTo&&typeof d.cashTo==='object'){const c={};for(const[k,v]of Object.entries(d.cashTo))if(/^\d{4}-\d{2}$/.test(k)&&(v==='a'||v==='b'))c[k]=v;await put('meta',{key:'cashTo',value:c})}
     await load();show();notify('ডেটা ইমপোর্ট হয়েছে')}
   catch{notify('ফাইলটি সঠিক ব্যাকআপ নয়')}}
-async function settle(mode){const r=calc(state.month);if(mode==='closed'){const amount=Math.abs(r.diff);const direction=r.diff>0?nm('b')+' → '+nm('a'):r.diff<0?nm('a')+' → '+nm('b'):'কারো';const f=modal('মাস বন্ধ করার নিশ্চিতকরণ',`<div class="confirm-step"><span class="step-kicker">শেষ ধাপ</span><h3>${direction} কে টাকা দেওয়া হয়েছে?</h3><p class="sub">পরিশোধ করা সঠিক amount লিখে Next চাপুন। সঠিক amount না মিললেও আপনার দেওয়া অঙ্কই সংরক্ষণ হবে।</p>${fld('পরিশোধিত সঠিক পরিমাণ (¥)','paid', 'number', amount,'min="0" step="1" required inputmode="numeric"')}</div>`,async d=>{const paid=Number(d.paid);if(!Number.isInteger(paid)||paid<0){notify('সঠিক পরিমাণ দিন');return false}await save('settlements',{month:state.month,mode,total:r.diff,paid,at:new Date().toISOString()},'মাস বন্ধ করা হয়েছে')});const submit=f.querySelector('button.primary');if(submit)submit.textContent='Next';return f}await save('settlements',{month:state.month,mode,total:r.diff,at:new Date().toISOString()},'পরের মাসে নিয়ে যাওয়া হয়েছে')}
+async function settle(mode){const r=calc(state.month);if(mode==='closed'){const amount=Math.abs(r.diff);const direction=r.diff>0?nm('b')+' → '+nm('a'):r.diff<0?nm('a')+' → '+nm('b'):'কারো';const f=modal('মাস বন্ধ করার নিশ্চিতকরণ',`<div class="confirm-step"><span class="step-kicker">শেষ ধাপ</span><h3>${direction} কে টাকা দেওয়া হয়েছে?</h3><p class="sub">পরিশোধ করা সঠিক amount লিখে Next চাপুন। সঠিক amount না মিললেও আপনার দেওয়া অঙ্কই সংরক্ষণ হবে।</p>${fld('পরিশোধিত সঠিক পরিমাণ (¥)','paid', 'number', amount,'min="0" step="1" required inputmode="numeric"')}</div>`,async d=>{const paid=Number(d.paid);if(!Number.isInteger(paid)||paid<0){notify('সঠিক পরিমাণ দিন');return false}await save('settlements',{month:state.month,mode,total:r.diff,cashTo:r.cashTo,cash:r.cash,paid,at:new Date().toISOString()},'মাস বন্ধ করা হয়েছে')});const submit=f.querySelector('button.primary');if(submit)submit.textContent='Next';return f}await save('settlements',{month:state.month,mode,total:r.diff,cashTo:r.cashTo,cash:r.cash,at:new Date().toISOString()},'পরের মাসে নিয়ে যাওয়া হয়েছে')}
 
 /* ---------- events ---------- */
 const actions={
@@ -202,9 +226,10 @@ const actions={
   go:(_,b)=>document.querySelector(`[data-page="${b.dataset.arg}"]`).click(),
   edit:(id,b)=>{const x=state[b.dataset.kind].find(v=>v.id===id);if(x)b.dataset.kind==='deposits'?depositForm(x):expenseForm(x)},
   del:async(id,b)=>{if(!confirm('এই রেকর্ডটি মুছে ফেলবেন?'))return;await del(b.dataset.kind,id);await load();show();notify('মুছে ফেলা হয়েছে')},
+  setCash:async k=>{if(k!=='a'&&k!=='b'||setl(state.month))return;state.cashTo[state.month]=k;await put('meta',{key:'cashTo',value:{...state.cashTo}});show();notify('নগদ প্রাপক: '+names[k])},
   close:()=>settle('closed'),carry:()=>settle('carry'),
   reopen:async()=>{await del('settlements',state.month);await load();show();notify('মাস আবার খোলা হয়েছে')},
-  exportJson:()=>{download(`shared-fund-backup-${today()}.json`,JSON.stringify({app:'shared-fund-manager',version:1,exported:new Date().toISOString(),names,deposits:state.deposits,expenses:state.expenses,settlements:state.settlements},null,2),'application/json');notify('ব্যাকআপ ডাউনলোড হয়েছে')},
+  exportJson:()=>{download(`shared-fund-backup-${today()}.json`,JSON.stringify({app:'shared-fund-manager',version:1,exported:new Date().toISOString(),names,cashTo:state.cashTo,deposits:state.deposits,expenses:state.expenses,settlements:state.settlements},null,2),'application/json');notify('ব্যাকআপ ডাউনলোড হয়েছে')},
   exportCsv:()=>{const q=v=>`"${String(v??'').replace(/"/g,'""')}"`;
     const rows=[...withKind(state.deposits,'deposits'),...withKind(state.expenses,'expenses')].sort(byDate).map(x=>{const d=x.kind==='deposits';return [x.date,d?'deposit':'expense',d?x.note:x.shop,d?names[x.member]:x.source==='fund'?'fund':names[x.source],d?'':x.scope,x.amount,d?'':x.note].map(q).join(',')});
     download(`shared-fund-transactions-${today()}.csv`,'\ufeff'+['date,type,detail,paid_by,scope,amount_jpy,note',...rows].join('\n'),'text/csv');notify('CSV ডাউনলোড হয়েছে')},
