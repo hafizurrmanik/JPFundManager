@@ -158,7 +158,7 @@ function txList(){
   if(q)l=l.filter(x=>[x.shop,x.note,names[x.member],names[x.source]].join(' ').toLowerCase().includes(q));
   $('#txlist').innerHTML=txTable(l)+`<p class="sub total-line">${l.length}টি রেকর্ড</p>`}
 pages.transactions=()=>{
-  app.innerHTML=head('HISTORY','লেনদে���ের ইতিহাস','সব জমা ও খরচ এক জায়গায়',monthIn())
+  app.innerHTML=head('HISTORY','লেনদেনের ইতিহাস','সব জমা ও খরচ এক জায়গায়',monthIn())
   +`<div class="panel"><div class="filters"><select id="ftype" aria-label="ধরন"><option value="all">সব ধরন</option><option value="deposits">শুধু জমা</option><option value="expenses">শুধু খরচ</option></select><select id="fscope" aria-label="সময়"><option value="month">এই মাস</option><option value="all">সব সময়</option></select><input id="q" type="search" placeholder="দোকান বা নোট খুঁজুন…" aria-label="খুঁজুন"></div><div id="txlist"></div></div>`;
   $('#ftype').value=tf.type;$('#fscope').value=tf.scope;$('#q').value=tf.q;txList()};
 
